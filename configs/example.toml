@@ -1,0 +1,48 @@
+[server]
+host = "127.0.0.1"
+port = 8000
+mount = "/stream.mp3"
+username = "source"
+password = "hackme"
+name = "My Radio"
+genre = "Various"
+description = "Automated stream"
+url = "https://example.com"
+public = false
+reconnect = true
+reconnect_initial_delay = "1s"
+reconnect_max_delay = "60s"
+reconnect_max_attempts = 0
+
+# Optional: stream the same audio to multiple Icecast mounts/servers.
+# When [[server.destinations]] is set, server.mount is not required.
+# [[server.destinations]]
+# mount = "/stream.mp3"
+# name = "primary"
+#
+# [[server.destinations]]
+# host = "backup.example.com"
+# port = 8000
+# mount = "/stream.mp3"
+# password = "backup-secret"
+# name = "backup"
+
+[audio]
+format = "mp3"
+bitrate = 128000
+
+[playlist]
+paths = ["/music"]
+recursive = true
+shuffle = true
+loop = true
+missing_file_backoff = "0"
+
+[metadata]
+update_interval = "5s"
+
+[logging]
+level = "info"
+# destination: stderr (default), file, syslog, or none
+destination = "stderr"
+# file = "/var/log/icestream.log"  # used when destination = "file"

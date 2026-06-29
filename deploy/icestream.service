@@ -1,0 +1,17 @@
+[Unit]
+Description=Icecast automated stream source
+After=network-online.target icecast2.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=icestream
+Group=icestream
+ExecStart=/usr/local/bin/icestream serve -c /etc/icestream/config.toml
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=600
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,4 @@
+/icestream
+*.exe
+*.test
+.DS_Store
