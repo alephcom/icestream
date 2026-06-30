@@ -12,6 +12,7 @@ import (
 
 	"github.com/darrenwiebe/icestream/internal/config"
 	"github.com/darrenwiebe/icestream/internal/metadata"
+	"github.com/darrenwiebe/icestream/internal/mp3"
 	"github.com/darrenwiebe/icestream/internal/pacing"
 	"github.com/darrenwiebe/icestream/internal/playlist"
 	"github.com/darrenwiebe/icestream/internal/source"
@@ -31,24 +32,30 @@ type Streamer interface {
 }
 
 type Engine struct {
-	cfg      *config.Config
-	tracks   []playlist.Track
-	streamer Streamer
-	pacer    pacing.Pacer
-	logger   *slog.Logger
+	cfg        *config.Config
+	tracks     []playlist.Track
+	streamer   Streamer
+	bitratePacer pacing.Pacer
+	framePacer   *pacing.FramePacer
+	logger     *slog.Logger
 }
 
 func New(cfg *config.Config, tracks []playlist.Track, streamer Streamer, logger *slog.Logger) *Engine {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Engine{
+	e := &Engine{
 		cfg:      cfg,
 		tracks:   tracks,
 		streamer: streamer,
-		pacer:    pacing.NewBitratePacer(cfg.Audio.Bitrate),
 		logger:   logger,
 	}
+	if cfg.Audio.Format == "mp3" {
+		e.framePacer = pacing.NewFramePacer()
+	} else {
+		e.bitratePacer = pacing.NewBitratePacer(cfg.Audio.Bitrate)
+	}
+	return e
 }
 
 func NewDefault(cfg *config.Config, tracks []playlist.Track, logger *slog.Logger) *Engine {
@@ -58,7 +65,8 @@ func NewDefault(cfg *config.Config, tracks []playlist.Track, logger *slog.Logger
 		MaxDelay:     cfg.ReconnectMaxDelay(),
 		MaxAttempts:  cfg.Server.ReconnectMaxAttempts,
 	}
-	streamer := source.NewMulti(cfg.Destinations(), cfg.Audio.Format, cfg.Audio.Bitrate, reconnect, logger)
+	meta := cfg.MetadataAdmin()
+	streamer := source.NewMulti(cfg.Destinations(), cfg.Audio.Format, cfg.Audio.Bitrate, meta, reconnect, logger)
 	return New(cfg, tracks, streamer, logger)
 }
 
@@ -275,23 +283,23 @@ func (e *Engine) streamTrack(ctx context.Context, path string) error {
 	}
 	defer f.Close()
 
-	e.pacer.Reset()
+	if e.cfg.Audio.Format == "mp3" {
+		return e.streamMP3Track(ctx, path, f)
+	}
+	return e.streamRawTrack(ctx, path, f)
+}
+
+func (e *Engine) streamRawTrack(ctx context.Context, path string, f *os.File) error {
+	e.bitratePacer.Reset()
 
 	buf := make([]byte, readBufferSize)
 	for {
 		n, err := f.Read(buf)
 		if n > 0 {
-			if _, werr := e.streamer.Write(buf[:n]); werr != nil {
-				if source.IsDisconnectError(werr) && e.cfg.Server.Reconnect {
-					e.logger.Warn("stream write failed, reconnecting", "path", path, "error", werr)
-					if rerr := reconnectWithBackoff(ctx, e.streamer, e.cfg, e.logger); rerr != nil {
-						return fmt.Errorf("reconnect: %w", rerr)
-					}
-					return ErrTrackInterrupted
-				}
+			if werr := e.writeChunk(ctx, path, buf[:n]); werr != nil {
 				return werr
 			}
-			e.pacer.WaitAfterWrite(n)
+			e.bitratePacer.WaitAfterWrite(n)
 		}
 		if err == io.EOF {
 			return nil
@@ -300,6 +308,63 @@ func (e *Engine) streamTrack(ctx context.Context, path string) error {
 			return err
 		}
 	}
+}
+
+func (e *Engine) streamMP3Track(ctx context.Context, path string, f *os.File) error {
+	fr, err := mp3.NewFrameReader(f)
+	if err != nil {
+		return err
+	}
+
+	e.framePacer.Reset()
+	var warnedBitrate bool
+
+	for {
+		frame, info, err := fr.Next()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+
+		if !warnedBitrate && e.cfg.Audio.Bitrate > 0 && info.Bitrate > 0 {
+			warnedBitrate = true
+			if diff := abs(info.Bitrate - e.cfg.Audio.Bitrate); diff*10 > e.cfg.Audio.Bitrate {
+				e.logger.Warn("audio bitrate mismatch",
+					"path", path,
+					"configured_bps", e.cfg.Audio.Bitrate,
+					"detected_bps", info.Bitrate,
+				)
+			}
+		}
+
+		if werr := e.writeChunk(ctx, path, frame); werr != nil {
+			return werr
+		}
+		e.framePacer.WaitAfterFrame(info.Duration)
+	}
+}
+
+func (e *Engine) writeChunk(ctx context.Context, path string, p []byte) error {
+	if _, werr := e.streamer.Write(p); werr != nil {
+		if source.IsDisconnectError(werr) && e.cfg.Server.Reconnect {
+			e.logger.Warn("stream write failed, reconnecting", "path", path, "error", werr)
+			if rerr := reconnectWithBackoff(ctx, e.streamer, e.cfg, e.logger); rerr != nil {
+				return fmt.Errorf("reconnect: %w", rerr)
+			}
+			return ErrTrackInterrupted
+		}
+		return werr
+	}
+	return nil
+}
+
+func abs(n int) int {
+	if n < 0 {
+		return -n
+	}
+	return n
 }
 
 func isOpenError(err error) bool {

@@ -40,6 +40,9 @@ missing_file_backoff = "0"
 
 [metadata]
 update_interval = "5s"
+# Icecast admin credentials for /admin/metadata (defaults: username admin, password server.password)
+# admin_username = "admin"
+# admin_password = "hackme"
 
 [logging]
 level = "info"

@@ -12,6 +12,7 @@ import (
 
 	"github.com/darrenwiebe/icestream/internal/config"
 	"github.com/darrenwiebe/icestream/internal/engine"
+	"github.com/darrenwiebe/icestream/internal/mp3"
 	"github.com/darrenwiebe/icestream/internal/playlist"
 	"github.com/darrenwiebe/icestream/internal/source"
 )
@@ -19,6 +20,7 @@ import (
 type mockStreamer struct {
 	mu            sync.Mutex
 	writes        int
+	chunks        [][]byte
 	metadata      []string
 	connected     bool
 	failWriteOnce bool
@@ -59,6 +61,7 @@ func (m *mockStreamer) Write(p []byte) (int, error) {
 		return 0, errors.New("broken pipe")
 	}
 	m.writes++
+	m.chunks = append(m.chunks, append([]byte(nil), p...))
 	return len(p), nil
 }
 
@@ -88,7 +91,7 @@ func testConfig(dir string, loop bool) *config.Config {
 			ReconnectMaxDelay:     "50ms",
 			ReconnectMaxAttempts:  3,
 		},
-		Audio: config.AudioConfig{Format: "mp3", Bitrate: 100_000_000},
+		Audio: config.AudioConfig{Format: "mp3", Bitrate: 32000},
 		Playlist: config.PlaylistConfig{
 			Paths:              []string{dir},
 			Recursive:          false,
@@ -101,12 +104,34 @@ func testConfig(dir string, loop bool) *config.Config {
 	}
 }
 
+func synthMPEG2Frame(t *testing.T) []byte {
+	t.Helper()
+	hdr := []byte{0xFF, 0xF3, 0x40, 0xC0}
+	info, err := mp3.ParseFrameHeader(hdr)
+	if err != nil {
+		t.Fatalf("parse synth header: %v", err)
+	}
+	frame := make([]byte, info.FrameLength)
+	copy(frame, hdr)
+	return frame
+}
+
+func writeTestMP3File(t *testing.T, path string, frames int) {
+	t.Helper()
+	frame := synthMPEG2Frame(t)
+	var buf []byte
+	for i := 0; i < frames; i++ {
+		buf = append(buf, frame...)
+	}
+	if err := os.WriteFile(path, buf, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestEnginePlaysTracksWithoutLoop(t *testing.T) {
 	dir := t.TempDir()
 	for _, name := range []string{"one.mp3", "two.mp3"} {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte("1234567890"), 0o644); err != nil {
-			t.Fatal(err)
-		}
+		writeTestMP3File(t, filepath.Join(dir, name), 1)
 	}
 
 	cfg := testConfig(dir, false)
@@ -151,12 +176,9 @@ func TestEnginePlaysTracksWithoutLoop(t *testing.T) {
 func TestEngineGracefulShutdown(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "long.mp3")
-	data := make([]byte, 256*1024)
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeTestMP3File(t, path, 3)
 
-	cfg := testConfig(dir, true)
+	cfg := testConfig(dir, false)
 
 	tracks, err := playlist.Scan(playlist.Options{
 		Paths:     cfg.Playlist.Paths,
@@ -200,9 +222,7 @@ func TestEngineGracefulShutdown(t *testing.T) {
 func TestEngineSkipsMissingFile(t *testing.T) {
 	dir := t.TempDir()
 	for _, name := range []string{"one.mp3", "two.mp3", "three.mp3"} {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte("12345"), 0o644); err != nil {
-			t.Fatal(err)
-		}
+		writeTestMP3File(t, filepath.Join(dir, name), 1)
 	}
 
 	cfg := testConfig(dir, false)
@@ -252,9 +272,7 @@ func TestEngineSkipsMissingFile(t *testing.T) {
 func TestEngineReconnectSkipsTrack(t *testing.T) {
 	dir := t.TempDir()
 	for _, name := range []string{"one.mp3", "two.mp3"} {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte("1234567890"), 0o644); err != nil {
-			t.Fatal(err)
-		}
+		writeTestMP3File(t, filepath.Join(dir, name), 1)
 	}
 
 	cfg := testConfig(dir, false)
@@ -301,9 +319,7 @@ func TestEngineReconnectSkipsTrack(t *testing.T) {
 
 func TestEngineReconnectFailureExits(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "one.mp3"), []byte("1234567890"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeTestMP3File(t, filepath.Join(dir, "one.mp3"), 1)
 
 	cfg := testConfig(dir, false)
 	cfg.Server.ReconnectMaxAttempts = 2
@@ -335,9 +351,7 @@ func TestEngineReconnectFailureExits(t *testing.T) {
 
 func TestEngineMissingFileBackoff(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "one.mp3"), []byte("12345"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeTestMP3File(t, filepath.Join(dir, "one.mp3"), 1)
 
 	cfg := testConfig(dir, false)
 	cfg.Playlist.MissingFileBackoff = "200ms"
@@ -459,9 +473,7 @@ func (d *dualStreamer) Close() error {
 func TestEnginePartialDestinationFailureCompletesTrack(t *testing.T) {
 	dir := t.TempDir()
 	for _, name := range []string{"one.mp3", "two.mp3"} {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte("1234567890"), 0o644); err != nil {
-			t.Fatal(err)
-		}
+		writeTestMP3File(t, filepath.Join(dir, name), 1)
 	}
 
 	cfg := testConfig(dir, false)
@@ -499,5 +511,52 @@ func TestEnginePartialDestinationFailureCompletesTrack(t *testing.T) {
 	if flakyWrites < 2 {
 		t.Fatalf("flaky writes = %d, want at least 2 (resumed after BeginTrack)", flakyWrites)
 	}
+}
+
+func TestEngineMP3WritesFrameAligned(t *testing.T) {
+	dir := t.TempDir()
+	writeTestMP3File(t, filepath.Join(dir, "one.mp3"), 2)
+
+	cfg := testConfig(dir, false)
+	tracks, err := playlist.Scan(playlist.Options{
+		Paths:     cfg.Playlist.Paths,
+		Recursive: cfg.Playlist.Recursive,
+		Extension: cfg.FileExtension(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mock := &mockStreamer{}
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	eng := engine.New(cfg, tracks, mock, logger)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	if err := eng.Run(ctx); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+	if len(mock.chunks) == 0 {
+		t.Fatal("expected frame writes")
+	}
+	for i, chunk := range mock.chunks {
+		if len(chunk) < 4 || !mp3.IsSyncByte(chunk[0]) {
+			t.Fatalf("write %d does not start with MPEG sync: % x", i, chunk[:min(4, len(chunk))])
+		}
+		if !mp3.IsValidHeader(chunk[:4]) {
+			t.Fatalf("write %d has invalid MPEG header", i)
+		}
+	}
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 

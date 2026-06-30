@@ -88,7 +88,13 @@ When every mount lives on Icecast you control, [Icecast relay](https://icecast.o
 
 ### Stream pacing
 
-Set `audio.bitrate` to the nominal bits-per-second of your encoded files (e.g. `128000` for 128 kbps). icestream throttles output to real-time playback, matching legacy IceGenerator's `shout_sync()` behavior. The bitrate is also sent to Icecast as the `Ice-Bitrate` header.
+Set `audio.bitrate` to the nominal bits-per-second of your encoded files (e.g. `128000` for 128 kbps). The value is sent to Icecast as the `Ice-Bitrate` header and checked against each MP3 file (a warning is logged when they differ by more than ~10%).
+
+For **MP3**, icestream strips ID3 tags, emits only complete MPEG frames, and paces playback from each frame's header timing (similar to legacy IceGenerator's `shout_sync()`). For **OGG**, output is throttled with the configured `audio.bitrate`.
+
+### Metadata updates
+
+Track titles are read from tags when available. Updates are sent via Icecast's `/admin/metadata` endpoint. Set `metadata.admin_username` (default `admin`) and `metadata.admin_password` (defaults to `server.password` when omitted). Use your Icecast `<admin-password>` for `metadata.admin_password`, not the mount source password.
 
 ### Reconnect
 
@@ -101,10 +107,6 @@ If a playlist file cannot be opened at playback time (deleted after startup, per
 ### OGG mount suffix
 
 Many players require the mount point to end in `.ogg` for OGG streams (e.g. `/stream.ogg`). MP3 mounts typically use `.mp3` (e.g. `/stream.mp3`). This matches the legacy IceGenerator behavior.
-
-### Metadata updates
-
-Track titles are read from tags when available. Updates are sent via Icecast's `/admin/metadata` endpoint using the **admin** user and the configured password. Ensure your Icecast `<admin-password>` matches or configure Icecast to allow metadata updates.
 
 ## CLI
 

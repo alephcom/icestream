@@ -78,6 +78,14 @@ type PlaylistConfig struct {
 
 type MetadataConfig struct {
 	UpdateInterval string `toml:"update_interval"`
+	AdminUsername  string `toml:"admin_username"`
+	AdminPassword  string `toml:"admin_password"`
+}
+
+// MetadataAdmin holds resolved Icecast admin credentials for /admin/metadata.
+type MetadataAdmin struct {
+	Username string
+	Password string
 }
 
 type LoggingConfig struct {
@@ -268,6 +276,18 @@ func (c *Config) MetadataUpdateInterval() time.Duration {
 	}
 	d, _ := time.ParseDuration(c.Metadata.UpdateInterval)
 	return d
+}
+
+func (c *Config) MetadataAdmin() MetadataAdmin {
+	user := c.Metadata.AdminUsername
+	if user == "" {
+		user = "admin"
+	}
+	pass := c.Metadata.AdminPassword
+	if pass == "" {
+		pass = c.Server.Password
+	}
+	return MetadataAdmin{Username: user, Password: pass}
 }
 
 func (c *Config) ReconnectInitialDelay() time.Duration {

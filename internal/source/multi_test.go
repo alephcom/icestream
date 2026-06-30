@@ -17,7 +17,7 @@ import (
 
 func newTestMulti(t *testing.T, dests []config.Destination, reconnect source.ReconnectSettings) *source.Multi {
 	t.Helper()
-	m := source.NewMulti(dests, "mp3", 128000, reconnect, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})))
+	m := source.NewMulti(dests, "mp3", 128000, config.MetadataAdmin{Username: "admin", Password: "secret"}, reconnect, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})))
 	t.Cleanup(func() { _ = m.Close() })
 	return m
 }

@@ -49,7 +49,7 @@ type Multi struct {
 	reconnectWG     sync.WaitGroup
 }
 
-func NewMulti(dests []config.Destination, audioFormat string, bitrate int, reconnect ReconnectSettings, logger *slog.Logger) *Multi {
+func NewMulti(dests []config.Destination, audioFormat string, bitrate int, meta config.MetadataAdmin, reconnect ReconnectSettings, logger *slog.Logger) *Multi {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -69,17 +69,19 @@ func NewMulti(dests []config.Destination, audioFormat string, bitrate int, recon
 		m.destinations = append(m.destinations, &destination{
 			label: d.Label,
 			client: New(Config{
-				ServerURL:   d.ServerURL,
-				Mount:       d.Mount,
-				Username:    d.Username,
-				Password:    d.Password,
-				Name:        d.Name,
-				Genre:       d.Genre,
-				Description: d.Description,
-				URL:         d.URL,
-				Public:      d.Public,
-				ContentType: contentType,
-				Bitrate:     bitrate,
+				ServerURL:     d.ServerURL,
+				Mount:         d.Mount,
+				Username:      d.Username,
+				Password:      d.Password,
+				AdminUsername: meta.Username,
+				AdminPassword: meta.Password,
+				Name:          d.Name,
+				Genre:         d.Genre,
+				Description:   d.Description,
+				URL:           d.URL,
+				Public:        d.Public,
+				ContentType:   contentType,
+				Bitrate:       bitrate,
 			}),
 			state: destActive,
 		})

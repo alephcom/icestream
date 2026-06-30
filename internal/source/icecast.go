@@ -18,17 +18,19 @@ const defaultBufferSize = 16 * 1024
 var ErrNotConnected = errors.New("not connected")
 
 type Config struct {
-	ServerURL   string
-	Mount       string
-	Username    string
-	Password    string
-	Name        string
-	Genre       string
-	Description string
-	URL         string
-	Public      bool
-	ContentType string
-	Bitrate     int
+	ServerURL      string
+	Mount          string
+	Username       string
+	Password       string
+	AdminUsername  string
+	AdminPassword  string
+	Name           string
+	Genre          string
+	Description    string
+	URL            string
+	Public         bool
+	ContentType    string
+	Bitrate        int
 }
 
 type Client struct {
@@ -201,7 +203,7 @@ func (c *Client) SetMetadata(title string) error {
 		return fmt.Errorf("create metadata request: %w", err)
 	}
 
-	req.Header.Set("Authorization", basicAuth("admin", c.cfg.Password))
+	req.Header.Set("Authorization", basicAuth(c.adminUsername(), c.adminPassword()))
 
 	resp, err := c.client.Do(req)
 	if err != nil {
@@ -229,6 +231,20 @@ func (c *Client) sourceUsername() string {
 		return c.cfg.Username
 	}
 	return "source"
+}
+
+func (c *Client) adminUsername() string {
+	if c.cfg.AdminUsername != "" {
+		return c.cfg.AdminUsername
+	}
+	return "admin"
+}
+
+func (c *Client) adminPassword() string {
+	if c.cfg.AdminPassword != "" {
+		return c.cfg.AdminPassword
+	}
+	return c.cfg.Password
 }
 
 func basicAuth(user, password string) string {

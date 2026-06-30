@@ -28,7 +28,7 @@ func basicAuthCreds(authHeader string) (user, password string, ok bool) {
 
 func TestClientConnectAndWrite(t *testing.T) {
 	var mu sync.Mutex
-	var method, auth, contentType, iceBitrate string
+	var method, auth, metaAuth, contentType, iceBitrate string
 	body := make([]byte, 0)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -48,6 +48,9 @@ func TestClientConnectAndWrite(t *testing.T) {
 			return
 		}
 		if r.URL.Path == "/admin/metadata" {
+			mu.Lock()
+			metaAuth = r.Header.Get("Authorization")
+			mu.Unlock()
 			w.WriteHeader(http.StatusOK)
 			return
 		}
@@ -56,15 +59,17 @@ func TestClientConnectAndWrite(t *testing.T) {
 	defer server.Close()
 
 	client := source.New(source.Config{
-		ServerURL:   server.URL,
-		Mount:       "/stream.mp3",
-		Password:    "secret",
-		Name:        "Test",
-		Description: "Desc",
-		Genre:       "Test",
-		URL:         "http://example.com",
-		ContentType: "audio/mpeg",
-		Bitrate:     128000,
+		ServerURL:     server.URL,
+		Mount:         "/stream.mp3",
+		Password:      "source-secret",
+		AdminUsername: "admin",
+		AdminPassword: "admin-secret",
+		Name:          "Test",
+		Description:   "Desc",
+		Genre:         "Test",
+		URL:           "http://example.com",
+		ContentType:   "audio/mpeg",
+		Bitrate:       128000,
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -103,6 +108,10 @@ func TestClientConnectAndWrite(t *testing.T) {
 	}
 	if string(body) != string(payload) {
 		t.Fatalf("body = %q", body)
+	}
+	user, pass, ok := basicAuthCreds(metaAuth)
+	if !ok || user != "admin" || pass != "admin-secret" {
+		t.Fatalf("metadata auth = %q:%q, want admin:admin-secret", user, pass)
 	}
 }
 
