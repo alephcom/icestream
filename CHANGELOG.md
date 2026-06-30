@@ -2,6 +2,12 @@
 
 All notable changes to icestream are documented in this file.
 
+## [0.0.3] - 2026-06-30
+
+### Fixed
+
+- **Icecast source PUT chunked encoding** — Stream to Icecast over raw HTTP/1.0 TCP with an identity body instead of Go `net/http` chunked PUT. Icecast stores chunk size lines (e.g. `68\r\n`) verbatim in live mounts when sources use chunked transfer encoding, which broke browser and ffplay playback.
+
 ## [0.0.2] - 2026-06-29
 
 ### Fixed

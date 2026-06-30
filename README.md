@@ -92,6 +92,8 @@ Set `audio.bitrate` to the nominal bits-per-second of your encoded files (e.g. `
 
 For **MP3**, icestream strips ID3 tags, emits only complete MPEG frames, and paces playback from each frame's header timing (similar to legacy IceGenerator's `shout_sync()`). For **OGG**, output is throttled with the configured `audio.bitrate`.
 
+Icecast source connections use **HTTP/1.0 with an identity-encoded body** (raw stream bytes on a TCP connection). Icecast does not decode `Transfer-Encoding: chunked` on source PUT requests; chunked bodies corrupt live mounts with HTTP chunk-size lines embedded in the audio.
+
 ### Metadata updates
 
 Track titles are read from tags when available. Updates are sent via Icecast's `/admin/metadata` endpoint. Set `metadata.admin_username` (default `admin`) and `metadata.admin_password` (defaults to `server.password` when omitted). Use your Icecast `<admin-password>` for `metadata.admin_password`, not the mount source password.
@@ -178,7 +180,7 @@ Graceful shutdown: send `SIGTERM` and confirm the log shows the current track co
 ## Architecture
 
 ```
-selector goroutine  →  player goroutine  →  Icecast HTTP PUT
+selector goroutine  →  player goroutine  →  Icecast HTTP/1.0 PUT (TCP)
                     ↘  metadata goroutine →  /admin/metadata
 ```
 

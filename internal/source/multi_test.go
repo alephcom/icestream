@@ -1,9 +1,11 @@
 package source_test
 
 import (
+	"bufio"
 	"context"
-	"io"
+	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -23,25 +25,11 @@ func newTestMulti(t *testing.T, dests []config.Destination, reconnect source.Rec
 }
 
 func TestMultiFanoutIdenticalBytes(t *testing.T) {
-	var mu sync.Mutex
-	bodies := make(map[string][]byte)
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPut {
-			http.NotFound(w, r)
-			return
-		}
-		data, _ := io.ReadAll(r.Body)
-		mu.Lock()
-		bodies[r.URL.Path] = append(bodies[r.URL.Path], data...)
-		mu.Unlock()
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
+	addr, capture := startRawIcecastLoopServer(t, 2)
 
 	dests := []config.Destination{
-		{Label: "a", ServerURL: server.URL, Mount: "/a.mp3", Password: "secret"},
-		{Label: "b", ServerURL: server.URL, Mount: "/b.mp3", Password: "secret"},
+		{Label: "a", ServerURL: addr, Mount: "/a.mp3", Password: "secret"},
+		{Label: "b", ServerURL: addr, Mount: "/b.mp3", Password: "secret"},
 	}
 	m := newTestMulti(t, dests, source.ReconnectSettings{Enabled: true, InitialDelay: 10 * time.Millisecond, MaxDelay: 50 * time.Millisecond})
 
@@ -61,54 +49,52 @@ func TestMultiFanoutIdenticalBytes(t *testing.T) {
 		t.Fatalf("Close() error = %v", err)
 	}
 
-	mu.Lock()
-	defer mu.Unlock()
-	if string(bodies["/a.mp3"]) != string(payload) {
-		t.Fatalf("/a.mp3 body = %q", bodies["/a.mp3"])
+	time.Sleep(100 * time.Millisecond)
+
+	capture.mu.Lock()
+	defer capture.mu.Unlock()
+	if capture.connectCount != 2 {
+		t.Fatalf("connectCount = %d, want 2", capture.connectCount)
 	}
-	if string(bodies["/b.mp3"]) != string(payload) {
-		t.Fatalf("/b.mp3 body = %q", bodies["/b.mp3"])
+	for i, body := range capture.bodies {
+		if string(body) != string(payload) {
+			t.Fatalf("body[%d] = %q", i, body)
+		}
 	}
 }
 
 func TestMultiPartialFailureContinuesHealthy(t *testing.T) {
+	goodAddr, goodBody := startRawIcecastStreamingServer(t)
+
+	failLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	t.Cleanup(func() { _ = failLn.Close() })
+	failAddr := fmt.Sprintf("http://127.0.0.1:%d", failLn.Addr().(*net.TCPAddr).Port)
+
 	var mu sync.Mutex
-	goodBody := make([]byte, 0)
 	failBody := make([]byte, 0)
 	failFirst := true
 
-	goodServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPut {
-			http.NotFound(w, r)
+	go func() {
+		conn, err := failLn.Accept()
+		if err != nil {
 			return
 		}
-		w.WriteHeader(http.StatusOK)
-		buf := make([]byte, 4096)
+		defer conn.Close()
+		br := bufio.NewReader(conn)
 		for {
-			n, err := r.Body.Read(buf)
-			if n > 0 {
-				mu.Lock()
-				goodBody = append(goodBody, buf[:n]...)
-				mu.Unlock()
-			}
-			if err != nil {
+			line, err := br.ReadString('\n')
+			if err != nil || line == "\r\n" {
 				break
 			}
 		}
-	}))
-	defer goodServer.Close()
-
-	failServer := httptest.NewServer(nil)
-	failServer.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPut {
-			http.NotFound(w, r)
-			return
-		}
-		w.WriteHeader(http.StatusOK)
+		_, _ = conn.Write([]byte("HTTP/1.0 200 OK\r\n\r\n"))
 		buf := make([]byte, 4096)
 		total := 0
 		for {
-			n, err := r.Body.Read(buf)
+			n, err := conn.Read(buf)
 			if n > 0 {
 				mu.Lock()
 				if total < 4 {
@@ -125,7 +111,7 @@ func TestMultiPartialFailureContinuesHealthy(t *testing.T) {
 				}
 				mu.Unlock()
 				if first {
-					go failServer.Close()
+					_ = conn.Close()
 					return
 				}
 			}
@@ -133,16 +119,11 @@ func TestMultiPartialFailureContinuesHealthy(t *testing.T) {
 				break
 			}
 		}
-		data, _ := io.ReadAll(r.Body)
-		mu.Lock()
-		failBody = append(failBody, data...)
-		mu.Unlock()
-	})
-	defer failServer.Close()
+	}()
 
 	dests := []config.Destination{
-		{Label: "good", ServerURL: goodServer.URL, Mount: "/good.mp3", Password: "secret"},
-		{Label: "fail", ServerURL: failServer.URL, Mount: "/fail.mp3", Password: "secret"},
+		{Label: "good", ServerURL: goodAddr, Mount: "/good.mp3", Password: "secret"},
+		{Label: "fail", ServerURL: failAddr, Mount: "/fail.mp3", Password: "secret"},
 	}
 	reconnect := source.ReconnectSettings{
 		Enabled:      true,
@@ -169,17 +150,14 @@ func TestMultiPartialFailureContinuesHealthy(t *testing.T) {
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		mu.Lock()
-		good := string(goodBody)
-		mu.Unlock()
-		if good == "chunk1chunk2" {
+		if goodBody.string() == "chunk1chunk2" {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 
+	good := goodBody.string()
 	mu.Lock()
-	good := string(goodBody)
 	fail := string(failBody)
 	mu.Unlock()
 
@@ -191,7 +169,6 @@ func TestMultiPartialFailureContinuesHealthy(t *testing.T) {
 	}
 
 	time.Sleep(500 * time.Millisecond)
-	time.Sleep(500 * time.Millisecond)
 	m.BeginTrack()
 	if _, err := m.Write([]byte("track2")); err != nil {
 		t.Fatalf("Write(track2) error = %v", err)
@@ -199,20 +176,14 @@ func TestMultiPartialFailureContinuesHealthy(t *testing.T) {
 
 	deadline = time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		mu.Lock()
-		good = string(goodBody)
-		mu.Unlock()
-		if good == "chunk1chunk2track2" {
+		if goodBody.string() == "chunk1chunk2track2" {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	mu.Lock()
-	good = string(goodBody)
-	mu.Unlock()
-	if good != "chunk1chunk2track2" {
-		t.Fatalf("good body after track2 = %q, want chunk1chunk2track2", good)
+	if goodBody.string() != "chunk1chunk2track2" {
+		t.Fatalf("good body after track2 = %q, want chunk1chunk2track2", goodBody.string())
 	}
 }
 
@@ -286,8 +257,6 @@ func TestMultiSetMetadataFanout(t *testing.T) {
 			return
 		}
 		if r.Method == http.MethodPut {
-			io.Copy(io.Discard, r.Body)
-			w.WriteHeader(http.StatusOK)
 			return
 		}
 		http.NotFound(w, r)
@@ -299,13 +268,6 @@ func TestMultiSetMetadataFanout(t *testing.T) {
 		{Label: "b", ServerURL: server.URL, Mount: "/b.mp3", Password: "secret"},
 	}
 	m := newTestMulti(t, dests, source.ReconnectSettings{Enabled: true})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	if err := m.Connect(ctx); err != nil {
-		t.Fatalf("Connect() error = %v", err)
-	}
 
 	if err := m.SetMetadata("Artist - Title"); err != nil {
 		t.Fatalf("SetMetadata() error = %v", err)
@@ -319,14 +281,10 @@ func TestMultiSetMetadataFanout(t *testing.T) {
 }
 
 func TestMultiConnectRollbackOnPartialFailure(t *testing.T) {
-	okServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		io.Copy(io.Discard, r.Body)
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer okServer.Close()
+	okAddr, _ := startRawIcecastServer(t, nil)
 
 	dests := []config.Destination{
-		{Label: "ok", ServerURL: okServer.URL, Mount: "/ok.mp3", Password: "secret"},
+		{Label: "ok", ServerURL: okAddr, Mount: "/ok.mp3", Password: "secret"},
 		{Label: "bad", ServerURL: "http://127.0.0.1:1", Mount: "/bad.mp3", Password: "secret"},
 	}
 	m := newTestMulti(t, dests, source.ReconnectSettings{Enabled: true})

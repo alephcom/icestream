@@ -27,39 +27,10 @@ func basicAuthCreds(authHeader string) (user, password string, ok bool) {
 }
 
 func TestClientConnectAndWrite(t *testing.T) {
-	var mu sync.Mutex
-	var method, auth, metaAuth, contentType, iceBitrate string
-	body := make([]byte, 0)
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/stream.mp3" && r.Method == http.MethodPut {
-			mu.Lock()
-			method = r.Method
-			auth = r.Header.Get("Authorization")
-			contentType = r.Header.Get("Content-Type")
-			iceBitrate = r.Header.Get("Ice-Bitrate")
-			mu.Unlock()
-
-			data, _ := io.ReadAll(r.Body)
-			mu.Lock()
-			body = append(body, data...)
-			mu.Unlock()
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		if r.URL.Path == "/admin/metadata" {
-			mu.Lock()
-			metaAuth = r.Header.Get("Authorization")
-			mu.Unlock()
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		http.NotFound(w, r)
-	}))
-	defer server.Close()
+	addr, capture := startRawIcecastServer(t, nil)
 
 	client := source.New(source.Config{
-		ServerURL:     server.URL,
+		ServerURL:     addr,
 		Mount:         "/stream.mp3",
 		Password:      "source-secret",
 		AdminUsername: "admin",
@@ -84,56 +55,42 @@ func TestClientConnectAndWrite(t *testing.T) {
 		t.Fatalf("Write() error = %v", err)
 	}
 
-	if err := client.SetMetadata("Artist - Song"); err != nil {
-		t.Fatalf("SetMetadata() error = %v", err)
-	}
-
 	if err := client.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)
 	}
 
-	mu.Lock()
-	defer mu.Unlock()
-	if method != http.MethodPut {
-		t.Fatalf("method = %q", method)
+	time.Sleep(50 * time.Millisecond)
+
+	capture.mu.Lock()
+	body := append([]byte(nil), capture.body...)
+	headers := capture.headers
+	capture.mu.Unlock()
+
+	if !strings.HasPrefix(headers, "PUT /stream.mp3 HTTP/1.0") {
+		t.Fatalf("request line = %q", strings.Split(headers, "\r\n")[0])
 	}
-	if !strings.HasPrefix(auth, "Basic ") {
-		t.Fatalf("missing basic auth")
+	if !strings.Contains(headers, "Authorization: Basic") {
+		t.Fatalf("missing basic auth in headers")
 	}
-	if contentType != "audio/mpeg" {
-		t.Fatalf("content type = %q", contentType)
+	if !strings.Contains(headers, "Content-Type: audio/mpeg") {
+		t.Fatalf("missing content type in headers")
 	}
-	if iceBitrate != "128000" {
-		t.Fatalf("Ice-Bitrate = %q, want 128000", iceBitrate)
+	if !strings.Contains(headers, "Ice-Bitrate: 128000") {
+		t.Fatalf("missing Ice-Bitrate in headers")
 	}
 	if string(body) != string(payload) {
 		t.Fatalf("body = %q", body)
 	}
-	user, pass, ok := basicAuthCreds(metaAuth)
-	if !ok || user != "admin" || pass != "admin-secret" {
-		t.Fatalf("metadata auth = %q:%q, want admin:admin-secret", user, pass)
-	}
 }
 
 func TestClientConnectUsesConfiguredSourceCredentials(t *testing.T) {
-	var mu sync.Mutex
-	var auth string
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/rock.mp3" && r.Method == http.MethodPut {
-			mu.Lock()
-			auth = r.Header.Get("Authorization")
-			mu.Unlock()
-			io.Copy(io.Discard, r.Body)
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		http.NotFound(w, r)
-	}))
-	defer server.Close()
+	headerReady := make(chan string, 1)
+	addr, _ := startRawIcecastServer(t, func(headers string) {
+		headerReady <- headers
+	})
 
 	client := source.New(source.Config{
-		ServerURL:   server.URL,
+		ServerURL:   addr,
 		Mount:       "/rock.mp3",
 		Username:    "rock_source",
 		Password:    "rock-pass",
@@ -150,11 +107,23 @@ func TestClientConnectUsesConfiguredSourceCredentials(t *testing.T) {
 		t.Fatalf("Close() error = %v", err)
 	}
 
-	mu.Lock()
-	defer mu.Unlock()
+	var headers string
+	select {
+	case headers = <-headerReady:
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for headers")
+	}
+
+	var auth string
+	for _, line := range strings.Split(headers, "\r\n") {
+		if strings.HasPrefix(line, "Authorization: ") {
+			auth = strings.TrimPrefix(line, "Authorization: ")
+			break
+		}
+	}
 	user, pass, ok := basicAuthCreds(auth)
 	if !ok {
-		t.Fatalf("invalid auth header %q", auth)
+		t.Fatalf("invalid auth in headers")
 	}
 	if user != "rock_source" || pass != "rock-pass" {
 		t.Fatalf("auth = %q:%q, want rock_source:rock-pass", user, pass)
@@ -169,29 +138,10 @@ func TestClientWriteWithoutConnect(t *testing.T) {
 }
 
 func TestClientReconnect(t *testing.T) {
-	var mu sync.Mutex
-	connectCount := 0
-	body := make([]byte, 0)
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/stream.mp3" && r.Method == http.MethodPut {
-			mu.Lock()
-			connectCount++
-			mu.Unlock()
-
-			data, _ := io.ReadAll(r.Body)
-			mu.Lock()
-			body = append(body, data...)
-			mu.Unlock()
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		http.NotFound(w, r)
-	}))
-	defer server.Close()
+	addr, capture := startRawIcecastLoopServer(t, 2)
 
 	client := source.New(source.Config{
-		ServerURL:   server.URL,
+		ServerURL:   addr,
 		Mount:       "/stream.mp3",
 		Password:    "secret",
 		ContentType: "audio/mpeg",
@@ -220,13 +170,54 @@ func TestClientReconnect(t *testing.T) {
 		t.Fatalf("Close() error = %v", err)
 	}
 
+	time.Sleep(100 * time.Millisecond)
+
+	capture.mu.Lock()
+	defer capture.mu.Unlock()
+	if capture.connectCount != 2 {
+		t.Fatalf("connectCount = %d, want 2", capture.connectCount)
+	}
+	if len(capture.bodies) != 2 {
+		t.Fatalf("bodies count = %d, want 2", len(capture.bodies))
+	}
+	if string(capture.bodies[0]) != "first" || string(capture.bodies[1]) != "second" {
+		t.Fatalf("bodies = %q, %q", capture.bodies[0], capture.bodies[1])
+	}
+}
+
+func TestClientSetMetadataUsesAdminCredentials(t *testing.T) {
+	var mu sync.Mutex
+	var metaAuth string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/admin/metadata" {
+			mu.Lock()
+			metaAuth = r.Header.Get("Authorization")
+			mu.Unlock()
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	client := source.New(source.Config{
+		ServerURL:     server.URL,
+		Mount:         "/stream.mp3",
+		Password:      "source-secret",
+		AdminUsername: "admin",
+		AdminPassword: "admin-secret",
+	})
+
+	if err := client.SetMetadata("Artist - Song"); err != nil {
+		t.Fatalf("SetMetadata() error = %v", err)
+	}
+
 	mu.Lock()
 	defer mu.Unlock()
-	if connectCount != 2 {
-		t.Fatalf("connectCount = %d, want 2", connectCount)
-	}
-	if string(body) != "firstsecond" {
-		t.Fatalf("body = %q", body)
+	user, pass, ok := basicAuthCreds(metaAuth)
+	if !ok || user != "admin" || pass != "admin-secret" {
+		t.Fatalf("metadata auth = %q:%q, want admin:admin-secret", user, pass)
 	}
 }
 
