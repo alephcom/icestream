@@ -120,7 +120,7 @@ func Load(path string) (*Config, error) {
 			MissingFileBackoff:   "0",
 		},
 		Metadata: MetadataConfig{
-			UpdateInterval: "5s",
+			UpdateInterval: "0",
 		},
 		Logging: LoggingConfig{
 			Level:       "info",

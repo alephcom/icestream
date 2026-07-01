@@ -69,7 +69,7 @@ See [configs/example.toml](configs/example.toml). Key sections:
 | `[server]` | Icecast defaults, reconnect settings, optional `[[server.destinations]]` fanout table (or single `mount`) |
 | `[audio]` | `mp3` or `ogg`, plus `bitrate` (bits/sec) for stream pacing |
 | `[playlist]` | Directories, recursive scan, shuffle, loop, missing-file backoff |
-| `[metadata]` | `update_interval` (e.g. `"5s"`); `"0"` sends title only on track change |
+| `[metadata]` | `update_interval` (default `"0"` = title only on track change; e.g. `"5s"` to refresh periodically) |
 | `[logging]` | Level (`debug`–`error`); destination `stderr` (default), `file`, `syslog`, or `none`; optional `file` path for file logging |
 
 ### Source authentication

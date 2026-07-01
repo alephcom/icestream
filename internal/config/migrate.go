@@ -164,7 +164,7 @@ func MigrateLegacy(legacy map[string]string) (*MigrateResult, error) {
 			MissingFileBackoff: "0",
 		},
 		Metadata: MetadataConfig{
-			UpdateInterval: "5s",
+			UpdateInterval: "0",
 		},
 		Logging: LoggingConfig{
 			Level:       "info",

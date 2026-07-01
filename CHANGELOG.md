@@ -2,6 +2,16 @@
 
 All notable changes to icestream are documented in this file.
 
+## [0.0.4] - 2026-06-30
+
+### Fixed
+
+- **Icecast admin load** — Default `metadata.update_interval` to `"0"` (send Now Playing only on track change) instead of every 5 seconds. With multi-destination fanout, the old default could push hundreds of `/admin/metadata` requests per minute to Icecast.
+
+### Changed
+
+- **Metadata deduplication** — When `update_interval` is set, skip admin metadata updates if the title has not changed since the last successful send.
+
 ## [0.0.3] - 2026-06-30
 
 ### Fixed

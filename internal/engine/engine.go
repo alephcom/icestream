@@ -236,16 +236,19 @@ func (e *Engine) runPlayer(ctx context.Context, tracks <-chan playlist.Track, tr
 func (e *Engine) runMetadata(ctx context.Context, currentTitle <-chan string, errCh chan<- error) {
 	interval := e.cfg.MetadataUpdateInterval()
 	var title string
+	var lastSentTitle string
 	var ticker *time.Ticker
 	var tickCh <-chan time.Time
 
 	sendMetadata := func() {
-		if title == "" {
+		if title == "" || title == lastSentTitle {
 			return
 		}
 		if err := e.streamer.SetMetadata(title); err != nil {
 			e.logger.Warn("metadata update failed", "error", err, "title", title)
+			return
 		}
+		lastSentTitle = title
 	}
 
 	for {

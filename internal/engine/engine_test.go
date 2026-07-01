@@ -560,3 +560,27 @@ func min(a, b int) int {
 	return b
 }
 
+func TestMetadataTickerSkipsUnchangedTitle(t *testing.T) {
+	dir := t.TempDir()
+	writeTestMP3File(t, filepath.Join(dir, "a.mp3"), 2)
+
+	cfg := testConfig(dir, false)
+	cfg.Metadata.UpdateInterval = "20ms"
+
+	streamer := &mockStreamer{}
+	eng := engine.New(cfg, []playlist.Track{{Path: filepath.Join(dir, "a.mp3")}}, streamer, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+
+	if err := eng.Run(ctx); err != nil && !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	streamer.mu.Lock()
+	defer streamer.mu.Unlock()
+	if len(streamer.metadata) != 1 {
+		t.Fatalf("metadata calls = %d, want 1 (unchanged title should not re-send on ticker)", len(streamer.metadata))
+	}
+}
+

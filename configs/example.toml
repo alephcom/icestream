@@ -39,7 +39,8 @@ loop = true
 missing_file_backoff = "0"
 
 [metadata]
-update_interval = "5s"
+# "0" = only on track change; use e.g. "5s" to refresh periodically
+update_interval = "0"
 # Icecast admin credentials for /admin/metadata (defaults: username admin, password server.password)
 # admin_username = "admin"
 # admin_password = "hackme"
